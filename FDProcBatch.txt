@@ -1,160 +1,358 @@
 Batch Layer Solution Steps
+This section outlines the batch processing steps to ingest, transform, and prepare data for fraud detection. The process involves Sqoop for data ingestion, Hive for data transformation, and HBase for efficient lookups.
 
-Step 1: Data Ingestion using Sqoop
-Imported card_member and member_score tables from AWS RDS into HDFS:
-sqoop import --connect jdbc:mysql://<amazon-rds>:3306/cred_financials_data \
---username <username> --password <password> \
---table card_member \
---warehouse-dir /user/ec2-user/CCFraudDetection/input/awsrdstables
+Step 1: Data Ingestion Using Sqoop
+Ingest historical data from AWS RDS into HDFS for batch processing.
 
-sqoop import --connect jdbc:mysql://<amazon-rds>:3306/cred_financials_data \
---username <username> --password <password> \
---table member_score \
---warehouse-dir /user/ec2-user/CCFraudDetection/input/awsrdstables
+Tables:
+card_member: Contains cardholder information.
+member_score: Contains credit scores for members.
+
+
+Commands:
+Ingest card_member Table:sqoop import \
+  --connect jdbc:mysql://<amazon-rds>:3306/cred_financials_data \
+  --username <username> \
+  --password <password> \
+  --table card_member \
+  --warehouse-dir /user/ec2-user/CCFraudDetection/input/awsrdstables
+
+
+Ingest member_score Table:sqoop import \
+  --connect jdbc:mysql://<amazon-rds>:3306/cred_financials_data \
+  --username <username> \
+  --password <password> \
+  --table member_score \
+  --warehouse-dir /user/ec2-user/CCFraudDetection/input/awsrdstables
+
+
+
+
+Output:
+Data is stored in HDFS at /user/ec2-user/CCFraudDetection/input/awsrdstables.
+
+
 
 
 Step 2: Move Local CSV to HDFS
-hadoop fs -mkdir -p /user/ec2-user/CCFraudDetection/input
-hadoop fs -put card_transactions.csv /user/ec2-user/CCFraudDetection/input/
+Transfer the card_transactions.csv file containing historical transaction data from the local file system to HDFS.
+
+Commands:
+Create the target directory in HDFS:hadoop fs -mkdir -p /user/ec2-user/CCFraudDetection/input
+
+
+Copy the file to HDFS:hadoop fs -put card_transactions.csv /user/ec2-user/CCFraudDetection/input/
+
+
+
+
+Output:
+File is available at /user/ec2-user/CCFraudDetection/input/card_transactions.csv.
+
+
 
 
 Step 3: Load Data into Hive & HBase
-3.1. Create Hive table for transaction history:
-CREATE EXTERNAL TABLE IF NOT EXISTS card_transactions_history_data (
-  card_id BIGINT, member_id BIGINT, amount DOUBLE, postcode INT,
-  pos_id BIGINT, transaction_dt STRING, status STRING
+Load the transaction data into Hive for processing and HBase for efficient lookups.
+3.1 Create Hive Table for Transaction History
+
+Purpose: Store historical transaction data in a Hive table for batch processing.
+Schema:
+card_id: Card identifier (BIGINT).
+member_id: Member identifier (BIGINT).
+amount: Transaction amount (DOUBLE).
+postcode: Postal code of the transaction location (INT).
+pos_id: Point of Sale terminal identifier (BIGINT).
+transaction_dt: Transaction timestamp (STRING, format: YYYY-MM-DD HH:MM:SS).
+status: Transaction status (STRING, e.g., GENUINE or FRAUDULENT).
+
+
+Command:CREATE EXTERNAL TABLE IF NOT EXISTS card_transactions_history_data (
+  card_id BIGINT,
+  member_id BIGINT,
+  amount DOUBLE,
+  postcode INT,
+  pos_id BIGINT,
+  transaction_dt STRING,
+  status STRING
 )
-ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
 LOCATION '/user/ec2-user/CCFraudDetection/input/hive/'
 TBLPROPERTIES ("skip.header.line.count"="1");
 
-LOAD DATA INPATH '/user/ec2-user/CCFraudDetection/input/card_transactions.csv'
+
+Load Data:LOAD DATA INPATH '/user/ec2-user/CCFraudDetection/input/card_transactions.csv'
 OVERWRITE INTO TABLE card_transactions_history_data;
-3.2. Create HBase table via Hive:
+
+
+
+3.2 Create HBase Table via Hive
+
+Purpose: Create an HBase table for fast lookups and integrate it with Hive.
+HBase Table Creation:
+Create an HBase table with two column families: cardDetail and transactionDetail.
+
 create 'card_transactions_master', 'cardDetail', 'transactionDetail'
+
+
+Hive-HBase Integration:
+Create a Hive table that maps to the HBase table.
+Use rowid as the HBase row key, generated using a UUID.
+
 CREATE EXTERNAL TABLE IF NOT EXISTS card_transactions_hbase_master (
-  rowid STRING, card_id BIGINT, member_id BIGINT, amount DOUBLE,
-  postcode INT, pos_id BIGINT, transaction_dt STRING, status STRING
+  rowid STRING,
+  card_id BIGINT,
+  member_id BIGINT,
+  amount DOUBLE,
+  postcode INT,
+  pos_id BIGINT,
+  transaction_dt STRING,
+  status STRING
 )
 STORED BY 'org.apache.hadoop.hive.hbase.HBaseStorageHandler'
 WITH SERDEPROPERTIES (
-  "hbase.columns.mapping" = ":key, cardDetail:card_id, cardDetail:member_id,
-   transactionDetail:amount, transactionDetail:postcode, transactionDetail:pos_id,
-   transactionDetail:transaction_dt, transactionDetail:status"
+  "hbase.columns.mapping" = ":key,cardDetail:card_id,cardDetail:member_id,transactionDetail:amount,transactionDetail:postcode,transactionDetail:pos_id,transactionDetail:transaction_dt,transactionDetail:status"
 )
 TBLPROPERTIES ("hbase.table.name" = "card_transactions_master");
 
+
+Load Data into Hive-HBase Table:
+Generate a unique rowid for each record and insert data from the raw Hive table.
+
 INSERT OVERWRITE TABLE card_transactions_hbase_master
-SELECT regexp_replace(reflect("java.util.UUID","randomUUID"), "-", "") AS rowid,
-       card_id, member_id, amount, postcode, pos_id, transaction_dt, status
+SELECT
+  regexp_replace(reflect("java.util.UUID", "randomUUID"), "-", "") AS rowid,
+  card_id,
+  member_id,
+  amount,
+  postcode,
+  pos_id,
+  transaction_dt,
+  status
 FROM card_transactions_history_data;
 
 
-Step 4: Create Lookup Table (HBase via Hive)
+
+
+Step 4: Create Lookup Table in HBase via Hive
+
+Purpose: Create an HBase table to store fraud detection parameters for quick lookups.
+HBase Table Creation:
+Create an HBase table with a single column family: cf.
+
 create 'card_transaction_lookup', 'cf'
+
+
+Hive-HBase Integration:
+Create a Hive table to interact with the HBase lookup table.
+Columns:
+card_id: Row key (BIGINT).
+ucl: Upper Control Limit (DOUBLE).
+postcode: Last known postcode (INT).
+transaction_dt: Last transaction timestamp (STRING).
+score: Member's credit score (INT).
+
+
+
 CREATE EXTERNAL TABLE IF NOT EXISTS card_transactions_lookup (
-  card_id BIGINT, ucl DOUBLE, postcode INT, transaction_dt STRING, score INT
+  card_id BIGINT,
+  ucl DOUBLE,
+  postcode INT,
+  transaction_dt STRING,
+  score INT
 )
 STORED BY 'org.apache.hadoop.hive.hbase.HBaseStorageHandler'
 WITH SERDEPROPERTIES (
-  "hbase.columns.mapping" = ":key, cf:ucl, cf:postcode, cf:transaction_dt, cf:score"
+  "hbase.columns.mapping" = ":key,cf:ucl,cf:postcode,cf:transaction_dt,cf:score"
 )
 TBLPROPERTIES ("hbase.table.name" = "card_transaction_lookup");
 
 
+
+
 Step 5: Prepare Hive Tables for Batch Computation
--- card_member table
-CREATE EXTERNAL TABLE IF NOT EXISTS card_member (
-  card_id BIGINT, member_id BIGINT, member_joining_dt STRING,
-  card_purchase_dt STRING, country STRING, city STRING
+Create Hive tables to store the ingested card_member and member_score data.
+
+card_member Table:CREATE EXTERNAL TABLE IF NOT EXISTS card_member (
+  card_id BIGINT,
+  member_id BIGINT,
+  member_joining_dt STRING,
+  card_purchase_dt STRING,
+  country STRING,
+  city STRING
 )
-ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
 LOCATION '/user/ec2-user/CCFraudDetection/input/hive/card_member/';
 
--- member_score table
-CREATE EXTERNAL TABLE IF NOT EXISTS member_score (
-  member_id BIGINT, score INT
+
+member_score Table:CREATE EXTERNAL TABLE IF NOT EXISTS member_score (
+  member_id BIGINT,
+  score INT
 )
-ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
 LOCATION '/user/ec2-user/CCFraudDetection/input/hive/member_score/';
 
 
-Step 6: Create Staging Tables (ORC format)
--- Score per card
-CREATE EXTERNAL TABLE IF NOT EXISTS card_score (
-  card_id BIGINT, score INT
+
+
+Step 6: Create Staging Tables in ORC Format
+Create staging tables in ORC format for efficient storage and computation.
+
+card_score Table (Score per card):CREATE EXTERNAL TABLE IF NOT EXISTS card_score (
+  card_id BIGINT,
+  score INT
 )
-STORED AS ORC LOCATION '/user/ec2-user/CCFraudDetection/input/hive/card_score/'
+STORED AS ORC
+LOCATION '/user/ec2-user/CCFraudDetection/input/hive/card_score/'
 TBLPROPERTIES ("orc.compress" = "SNAPPY");
 
--- Last 10 transactions
-CREATE EXTERNAL TABLE IF NOT EXISTS card_last_ten_transactions (
-  card_id BIGINT, amount DOUBLE, postcode INT, transaction_dt STRING, status STRING
+
+card_last_ten_transactions Table (Last 10 transactions per card):CREATE EXTERNAL TABLE IF NOT EXISTS card_last_ten_transactions (
+  card_id BIGINT,
+  amount DOUBLE,
+  postcode INT,
+  transaction_dt STRING,
+  status STRING
 )
-STORED AS ORC LOCATION '/user/ec2-user/CCFraudDetection/input/hive/card_last_ten_transactions/'
+STORED AS ORC
+LOCATION '/user/ec2-user/CCFraudDetection/input/hive/card_last_ten_transactions/'
 TBLPROPERTIES ("orc.compress" = "SNAPPY");
 
--- UCL values
-CREATE EXTERNAL TABLE IF NOT EXISTS card_ucl (
-  card_id BIGINT, ucl DOUBLE
+
+card_ucl Table (UCL values):CREATE EXTERNAL TABLE IF NOT EXISTS card_ucl (
+  card_id BIGINT,
+  ucl DOUBLE
 )
-STORED AS ORC LOCATION '/user/ec2-user/CCFraudDetection/input/hive/card_ucl/'
+STORED AS ORC
+LOCATION '/user/ec2-user/CCFraudDetection/input/hive/card_ucl/'
 TBLPROPERTIES ("orc.compress" = "SNAPPY");
 
--- Latest zipcode & transaction date
-CREATE EXTERNAL TABLE IF NOT EXISTS card_zipcode (
-  card_id BIGINT, postcode INT, transaction_dt STRING
+
+card_zipcode Table (Latest zipcode and transaction date):CREATE EXTERNAL TABLE IF NOT EXISTS card_zipcode (
+  card_id BIGINT,
+  postcode INT,
+  transaction_dt STRING
 )
-STORED AS ORC LOCATION '/user/ec2-user/CCFraudDetection/input/hive/card_zipcode/'
+STORED AS ORC
+LOCATION '/user/ec2-user/CCFraudDetection/input/hive/card_zipcode/'
 TBLPROPERTIES ("orc.compress" = "SNAPPY");
+
+
 
 
 Step 7: Load Ingested Data into Hive
-LOAD DATA INPATH '/user/ec2-user/CCFraudDetection/input/awsrdstables/card_member/part*'
+Load the ingested data from HDFS into the respective Hive tables.
+
+Load card_member Data:LOAD DATA INPATH '/user/ec2-user/CCFraudDetection/input/awsrdstables/card_member/part*'
 OVERWRITE INTO TABLE card_member;
 
-LOAD DATA INPATH '/user/ec2-user/CCFraudDetection/input/awsrdstables/member_score/part*'
+
+Load member_score Data:LOAD DATA INPATH '/user/ec2-user/CCFraudDetection/input/awsrdstables/member_score/part*'
 OVERWRITE INTO TABLE member_score;
 
 
+
+
 Step 8: Join Member Score with Cards
-INSERT OVERWRITE TABLE card_score
-SELECT cm.card_id, ms.score
+Compute the credit score for each card by joining card_member and member_score.
+
+Command:INSERT OVERWRITE TABLE card_score
+SELECT
+  cm.card_id,
+  ms.score
 FROM card_member cm
 JOIN member_score ms ON cm.member_id = ms.member_id;
 
 
+Output:
+The card_score table now contains the score for each card_id.
+
+
+
+
 Step 9: Get Last 10 Genuine Transactions
-INSERT OVERWRITE TABLE card_last_ten_transactions
-SELECT card_id, amount, postcode, transaction_dt, status
+Extract the last 10 genuine transactions for each card to compute fraud detection parameters.
+
+Command:INSERT OVERWRITE TABLE card_last_ten_transactions
+SELECT
+  card_id,
+  amount,
+  postcode,
+  transaction_dt,
+  status
 FROM (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY card_id ORDER BY unix_timestamp(transaction_dt,'yyyy-MM-dd HH:mm:ss') DESC) AS rn
+  SELECT
+    *,
+    ROW_NUMBER() OVER (PARTITION BY card_id ORDER BY unix_timestamp(transaction_dt, 'yyyy-MM-dd HH:mm:ss') DESC) AS rn
   FROM card_transactions_hbase_master
   WHERE status = 'GENUINE'
 ) t
 WHERE t.rn <= 10;
 
+
+Output:
+The card_last_ten_transactions table contains up to 10 recent genuine transactions per card_id.
+
+
+
+
 Step 10: Calculate UCL (Upper Control Limit)
-INSERT OVERWRITE TABLE card_ucl
-SELECT card_id, (AVG(amount) + 3 * STDDEV(amount)) AS ucl
+Compute the Upper Control Limit (UCL) for each card using the formula: UCL = Mean + 3 * Standard Deviation.
+
+Command:INSERT OVERWRITE TABLE card_ucl
+SELECT
+  card_id,
+  (AVG(amount) + 3 * STDDEV(amount)) AS ucl
 FROM card_last_ten_transactions
 GROUP BY card_id;
 
 
+Output:
+The card_ucl table contains the UCL value for each card_id.
+
+
+
+
 Step 11: Get Latest Zipcode and Transaction Date
-INSERT OVERWRITE TABLE card_zipcode
-SELECT card_id, postcode, transaction_dt
+Extract the most recent postcode and transaction timestamp for each card.
+
+Command:INSERT OVERWRITE TABLE card_zipcode
+SELECT
+  card_id,
+  postcode,
+  transaction_dt
 FROM (
-  SELECT *, ROW_NUMBER() OVER (PARTITION BY card_id ORDER BY unix_timestamp(transaction_dt,'yyyy-MM-dd HH:mm:ss') DESC) AS rn
+  SELECT
+    *,
+    ROW_NUMBER() OVER (PARTITION BY card_id ORDER BY unix_timestamp(transaction_dt, 'yyyy-MM-dd HH:mm:ss') DESC) AS rn
   FROM card_last_ten_transactions
 ) t
 WHERE t.rn = 1;
 
 
-Step 12: Final Join to Create Lookup Table
-INSERT OVERWRITE TABLE card_transactions_lookup
-SELECT cs.card_id, cu.ucl, cz.postcode, cz.transaction_dt, cs.score
+Output:
+The card_zipcode table contains the latest postcode and transaction_dt for each card_id.
+
+
+
+
+Step 12: Final Join to Populate Lookup Table
+Combine the computed parameters (score, UCL, latest postcode, and transaction timestamp) into the HBase lookup table.
+
+Command:INSERT OVERWRITE TABLE card_transactions_lookup
+SELECT
+  cs.card_id,
+  cu.ucl,
+  cz.postcode,
+  cz.transaction_dt,
+  cs.score
 FROM card_score cs
 JOIN card_ucl cu ON cs.card_id = cu.card_id
 JOIN card_zipcode cz ON cs.card_id = cz.card_id;
 
+
+Output:
+The card_transactions_lookup HBase table is populated with fraud detection parameters for each card_id.

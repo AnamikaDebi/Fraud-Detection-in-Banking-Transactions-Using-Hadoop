@@ -4,93 +4,79 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
 import java.util.HashMap;
+import java.util.Map;
 
 /**
- * Utility class that reads file zipCodePosId.csv and using same if two zip
- * codes are provided, it returns distances.
- *
+ * Utility class to calculate distance between two zip codes using their latitude and longitude.
+ * Reads zip code data from a CSV file (zipCodePosId.csv).
  */
-
 class ZipCodeData {
-	double lat;
-	double lon;
-	String city;
-	String state_name;
-	String postId;
+    double lat;
+    double lon;
+    String city;
+    String state;
+    String postId;
 
-	public ZipCodeData(double lat, double lon, String city, String state_name, String postId) {
-		this.lat = lat;
-		this.lon = lon;
-		this.city = city;
-		this.state_name = state_name;
-		this.postId = postId;
-	}
+    public ZipCodeData(double lat, double lon, String city, String state, String postId) {
+        this.lat = lat;
+        this.lon = lon;
+        this.city = city;
+        this.state = state;
+        this.postId = postId;
+    }
 }
 
-class DistanceUtility {
+public class DistanceUtility {
+    private static DistanceUtility instance;
+    private final Map<String, ZipCodeData> zipCodesMap = new HashMap<>();
 
-	private static DistanceUtility instance = null;
-	HashMap<String, ZipCodeData> zipCodesMap = new HashMap<String, ZipCodeData>();
-	
-	public static DistanceUtility GetInstance(String zipCodePosIdCsvPath) throws NumberFormatException, IOException
-	{
-		if(instance == null)
-		{
-			instance = new DistanceUtility(zipCodePosIdCsvPath);
-		}
-		return instance;
-	}
+    // Singleton pattern to ensure one instance
+    public static synchronized DistanceUtility getInstance(String zipCodeCsvPath) throws IOException {
+        if (instance == null) {
+            instance = new DistanceUtility(zipCodeCsvPath);
+        }
+        return instance;
+    }
 
-	private DistanceUtility(String zipCodePosIdCsvPath) throws NumberFormatException, IOException {
+    private DistanceUtility(String zipCodeCsvPath) throws IOException {
+        try (BufferedReader br = new BufferedReader(new FileReader(zipCodeCsvPath))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] data = line.split(",");
+                if (data.length != 6) continue; // Skip malformed lines
 
-		BufferedReader br = new BufferedReader(new FileReader(zipCodePosIdCsvPath));
+                String zipCode = data[0];
+                double lat = Double.parseDouble(data[1]);
+                double lon = Double.parseDouble(data[2]);
+                String city = data[3];
+                String state = data[4];
+                String postId = data[5];
 
-		String line = null;
+                zipCodesMap.put(zipCode, new ZipCodeData(lat, lon, city, state, postId));
+            }
+        } catch (NumberFormatException e) {
+            throw new IOException("Invalid numeric data in CSV file", e);
+        }
+    }
 
-		while ((line = br.readLine()) != null) {
-			String str[] = line.split(",");
+    public double getDistanceViaZipCode(String zipCode1, String zipCode2) {
+        ZipCodeData z1 = zipCodesMap.get(zipCode1);
+        ZipCodeData z2 = zipCodesMap.get(zipCode2);
+        if (z1 == null || z2 == null) {
+            throw new IllegalArgumentException("Invalid zip code: " + (z1 == null ? zipCode1 : zipCode2));
+        }
+        return calculateDistance(z1.lat, z1.lon, z2.lat, z2.lon);
+    }
 
-			String zipCode = str[0];
+    // Calculate distance using the Haversine formula (in kilometers)
+    private double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+        double lonDiff = Math.toRadians(lon1 - lon2);
+        double lat1Rad = Math.toRadians(lat1);
+        double lat2Rad = Math.toRadians(lat2);
 
-			double lat = Double.parseDouble(str[1]);
-			double lon = Double.parseDouble(str[2]);
-			;
-			String city = str[3];
-			String state_name = str[4];
-			String postId = str[5];
-
-			ZipCodeData zipCodeData = new ZipCodeData(lat, lon, city, state_name, postId);
-
-			zipCodesMap.put(zipCode, zipCodeData);
-		}
-		
-		br.close();
-	}
-
-	public double getDistanceViaZipCode(String zipcode1, String zipcode2) {
-		ZipCodeData z1 = zipCodesMap.get(zipcode1);
-		ZipCodeData z2 = zipCodesMap.get(zipcode2);
-		return distance(z1.lat, z1.lon, z2.lat, z2.lon);
-	}
-
-	private double distance(double lat1, double lon1, double lat2, double lon2) {
-		double theta = lon1 - lon2;
-		double dist = Math.sin(deg2rad(lat1)) * Math.sin(deg2rad(lat2))
-				+ Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) * Math.cos(deg2rad(theta));
-		dist = Math.acos(dist);
-		dist = rad2deg(dist);
-		dist = dist * 60 * 1.1515;
-		dist = dist * 1.609344;
-
-		return dist;
-	}
-
-	private double rad2deg(double rad) {
-		return rad * 180.0 / Math.PI;
-	}
-
-	private double deg2rad(double deg) {
-		return deg * Math.PI / 180.0;
-	}
-
+        double dist = Math.sin(lat1Rad) * Math.sin(lat2Rad) +
+                      Math.cos(lat1Rad) * Math.cos(lat2Rad) * Math.cos(lonDiff);
+        dist = Math.acos(dist) * 6371; // Earth's radius in km
+        return dist;
+    }
 }

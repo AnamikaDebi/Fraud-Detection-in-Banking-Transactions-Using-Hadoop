@@ -1,0 +1,87 @@
+Step-by-Step Implementation: Real-Time Fraud Detection Using Spark, Kafka & HBase
+
+1. Project Setup
+A Java-based project was created with the name BankingFraudDetection, featuring a main class FraudDetectionDriver. This class accepts the following command-line arguments:
+<broker> <topic> <groupId> <zipcodeCSVPath> <hbaseMaster>
+If fewer than 5 arguments are supplied, the application exits with an error message.
+
+
+2. Initializing Spark Streaming Context
+A Spark configuration is initialized with a batch interval of 1 second to enable real-time processing.
+SparkConf conf = new SparkConf().setAppName("BankingFraudDetection");
+JavaStreamingContext context = new JavaStreamingContext(conf, Durations.seconds(1));
+
+
+3. Kafka Consumer Configuration
+Kafka parameters are set up using the arguments passed. A topic is subscribed using KafkaUtils to consume streaming data.
+Set<String> topicSet = new HashSet<>(Arrays.asList(topic));
+Map<String, Object> kafkaParams = new HashMap<>();
+kafkaParams.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, broker);
+kafkaParams.put(ConsumerConfig.GROUP_ID_CONFIG, groupId);
+kafkaParams.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+kafkaParams.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+kafkaParams.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true");
+kafkaParams.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+
+JavaInputDStream<ConsumerRecord<String, JsonNode>> messages =
+    KafkaUtils.createDirectStream(context, LocationStrategies.PreferConsistent(),
+    ConsumerStrategies.Subscribe(topicSet, kafkaParams));
+
+
+
+4. Data Parsing and Transformation
+Incoming Kafka messages (in JSON format) are mapped into Java POJOs of type TransactionRecord using Jackson's ObjectMapper.
+JavaDStream<TransactionRecord> transactions = messages.map(record -> {
+    ObjectMapper mapper = new ObjectMapper();
+    return mapper.treeToValue(record.value(), TransactionRecord.class);
+});
+
+
+
+5. Fraud Detection Logic
+Each RDD from the DStream undergoes fraud analysis and HBase write operations.
+a. Fetch Historical Transaction Data
+For each incoming transaction, the system fetches past transaction details (like UCL, score, location) from the HBase table transaction_lookup.
+TransactionHistory previous = HBaseClient.fetchLastTransaction(transaction, hbaseMaster);
+b. Distance Calculation
+Using the provided zipCodePosId.csv file, the system calculates the distance (in km) between current and previous transaction locations.
+double distance = DistanceUtility.getInstance(zipCsvPath)
+    .getDistanceViaZipCode(transaction.getPostcode(), previous.getPostcode());
+c. Speed Estimation
+Using transaction timestamps, speed in km/sec is calculated to determine if physical movement is possible.
+DateFormat df = new SimpleDateFormat("dd-MM-yyyy HH:mm:ss");
+long diffSeconds = (df.parse(transaction.getTime()).getTime() - df.parse(previous.getTime()).getTime()) / 1000;
+double speed = distance / diffSeconds;
+d. Rule-Based Fraud Decision
+A rule-based engine flags transactions as FRAUD if any of the following conditions hold:
+•	Historical score < 200
+•	Transaction amount > user’s UCL
+•	Travel speed > 0.25 km/s (based on 1km per 4 sec threshold)
+String status = "GENUINE";
+if (previous.getScore() < 200 || transaction.getAmount() > previous.getUCL() || speed > 0.25) {
+    status = "FRAUD";
+}
+e. Database Update
+The results are pushed to HBase:
+•	transaction_master: stores every transaction along with its status
+•	transaction_lookup: updated only if the transaction is genuine
+HBaseClient.insertTransaction(transaction, hbaseMaster, status);
+f. Print Results to Console
+All transaction-status pairs are collected and printed.
+transactionResults.collect().forEach(pair ->
+    System.out.println(pair._1 + " - " + pair._2));
+
+
+Running the Application on EC2
+To deploy the application on an EC2 cluster:
+1.	Upload zipCodePosId.csv to the instance:
+chmod o+x /home/ec2-user/
+2.	Submit the Spark job using:
+spark2-submit \
+  --class com.bank.FraudDetectionDriver \
+  --master yarn \
+  --deploy-mode client \
+  --name FraudDetectionApp \
+  --conf "spark.app.id=FraudDetectionApp spark.driver.memory=12g spark.executor.memory=12g spark.executor.instances=2" \
+  bankingfrauddetection-1.0-SNAPSHOT-jar-with-dependencies.jar \
+  <broker> <topic> <groupId> <zipcodeCsvPath> <hbaseMaster> &> output.txt

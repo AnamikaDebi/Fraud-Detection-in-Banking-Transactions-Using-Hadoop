@@ -6,10 +6,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * Utility class to calculate distance between two zip codes using their latitude and longitude.
- * Reads zip code data from a CSV file (zipCodePosId.csv).
- */
+
 class ZipCodeData {
     double lat;
     double lon;
@@ -43,7 +40,7 @@ public class DistanceUtility {
             String line;
             while ((line = br.readLine()) != null) {
                 String[] data = line.split(",");
-                if (data.length != 6) continue; // Skip malformed lines
+                if (data.length != 6) continue; 
 
                 String zipCode = data[0];
                 double lat = Double.parseDouble(data[1]);
@@ -76,7 +73,7 @@ public class DistanceUtility {
 
         double dist = Math.sin(lat1Rad) * Math.sin(lat2Rad) +
                       Math.cos(lat1Rad) * Math.cos(lat2Rad) * Math.cos(lonDiff);
-        dist = Math.acos(dist) * 6371; // Earth's radius in km
+        dist = Math.acos(dist) * 6371; 
         return dist;
     }
 }

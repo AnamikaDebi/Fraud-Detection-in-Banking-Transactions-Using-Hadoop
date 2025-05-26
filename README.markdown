@@ -3,7 +3,7 @@
 ## Overview
 This project develops a pipeline to detect fraudulent credit card transactions in near real-time using the Hadoop ecosystem. The pipeline ingests historical and streaming transaction data, calculates fraud detection parameters, and applies rules to classify transactions as genuine or fraudulent. It leverages tools like Sqoop, Hive, HBase, Spark Streaming, and Kafka to handle batch and real-time data processing.
 
----
+
 
 ## Input Data
 The pipeline uses the following datasets:
@@ -45,7 +45,7 @@ The pipeline uses the following datasets:
      - `postcode`: Postal code of the transaction location.
      - `transaction_dt`: Transaction timestamp (format: YYYY-MM-DD HH:MM:SS).
 
----
+
 
 ## Architecture and Approach
 The pipeline combines batch and real-time processing to detect fraudulent transactions:
@@ -60,7 +60,7 @@ The pipeline combines batch and real-time processing to detect fraudulent transa
    - Query the HBase lookup table to apply fraud detection rules.
    - Update the `card_transactions` table and the lookup table based on the transaction status.
 
----
+
 
 ## Data Ingestion
 
@@ -77,7 +77,7 @@ The pipeline combines batch and real-time processing to detect fraudulent transa
       --target-dir /user/hadoop/card_member \
       --fields-terminated-by ',' \
       --m 1
-    ```
+   
   - **Incremental Ingestion**:
     - Use `member_joining_dt` as the incremental check column.
     - Create a Sqoop job for incremental updates:
@@ -97,7 +97,7 @@ The pipeline combines batch and real-time processing to detect fraudulent transa
     - Run the job periodically:
       ```bash
       sqoop job --exec card_member_job
-      ```
+      
 
 - **member_score** Table:
   - Full ingestion command:
@@ -110,7 +110,7 @@ The pipeline combines batch and real-time processing to detect fraudulent transa
       --target-dir /user/hadoop/member_score \
       --fields-terminated-by ',' \
       --m 1
-    ```
+   
   - **Incremental Ingestion**:
     - Use Sqoop job for incremental updates (if scores are updated over time):
       ```bash
@@ -121,14 +121,14 @@ The pipeline combines batch and real-time processing to detect fraudulent transa
         --password <password> \
         --table██
 
----
+
 
 ### 2. Load `card_transactions` into HBase
 #### a. Copy Data to HDFS
 - Copy the `card_transactions` file from the local file system to HDFS:
   ```bash
   hdfs dfs -put card_transactions.csv /user/hadoop/card_transactions
-  ```
+ 
 
 #### b. Create Hive Table and Load Data
 - Create a raw Hive table to store the `card_transactions` data:
@@ -146,14 +146,14 @@ The pipeline combines batch and real-time processing to detect fraudulent transa
   WITH (field_delimiter=',')
   STORED AS TEXTFILE
   LOCATION '/user/hadoop/card_transactions';
-  ```
+ 
 
 #### c. Create Hive-HBase Integrated Table
 - Define a row key as `card_id` for efficient lookups in HBase.
 - Create an HBase table:
   ```bash
   create 'card_transactions_hbase', {NAME => 'cf', VERSIONS => 1}
-  ```
+  
 - Create a Hive table integrated with HBase:
   ```sql
   CREATE TABLE card_transactions_hive_hbase (
@@ -170,7 +170,7 @@ pos_id STRING,
   STORED BY 'org.apache.hadoop.hive.hbase.HBaseStorageHandler'
   WITH SERDEPROPERTIES ('hbase.table.name' = 'card_transactions_hbase')
   TBLPROPERTIES ('hbase.columns.mapping' = ':key,cf:member_id,cf:amount,cf:postcode,cf:pos_id,cf:transaction_dt,cf:status');
-  ```
+
 
 #### d. Create HBase Lookup Table
 - Create an HBase table for storing fraud detection parameters (UCL, last postcode, last transaction timestamp):
@@ -182,7 +182,7 @@ pos_id STRING,
   - Column family: `cf`
   - Columns: `ucl`, `last_postcode`, `last_transaction_dt`
 
----
+
 
 ## Fraud Detection Parameters
 
@@ -220,7 +220,7 @@ b. **Create Final Table for UCL**
        ucl DOUBLE
      )
      STORED AS ORC;
-     ```
+     
    - Calculate UCL:
      ```sql
      INSERT INTO card_transactions_ucl
@@ -228,7 +228,7 @@ b. **Create Final Table for UCL**
        card_id,
        moving_avg + (3 * std_dev) as ucl
      FROM card_transactions_stats;
-     ```
+   
 
 c. **Store UCL in HBase Lookup Table**
    - Use a script (e.g., in Python with HappyBase) to update the `fraud_lookup` table:
@@ -239,7 +239,7 @@ c. **Store UCL in HBase Lookup Table**
        table = connection.table('fraud_lookup')
        for row in card_transactions_ucl_data:
            table.put(row['card_id'], {'cf:ucl': str(row['ucl'])})
-       ```
+   
 
 - **Update Frequency**: Recalculate UCL at regular intervals (e.g., every hour) to keep the lookup table up-to-date.
 
@@ -262,7 +262,7 @@ a. **Join and Flag Transactions**
        score INT
      )
      STORED AS ORC;
-     ```
+    
    - Perform the join:
      ```sql
      INSERT INTO card_transactions_score_check
@@ -277,7 +277,7 @@ a. **Join and Flag Transactions**
        m.score
      FROM card_transactions_hive_hbase t
      JOIN member_score m ON t.member_id = m.member_id;
-     ```
+   
 
 b. **Update Frequency**: Recompute every 4 hours to account for score updates.
 
@@ -300,7 +300,7 @@ b. **Calculate Distance and Speed**
 c. **Update Lookup Table**
    - If the transaction is genuine, update the `fraud_lookup` table with the current `postcode` and `transaction_dt`.
 
----
+
 
 ## Real-Time Processing with Spark Streaming
 
@@ -326,7 +326,7 @@ c. **Update Lookup Table**
 ### 3. SLA
 - Ensure fraud detection and updates occur within **seconds** to meet real-time requirements.
 
----
+
 
 ## Output
 - The `card_transactions_hive_hbase` table will be updated with the `status` of each transaction (`Genuine` or `Fraudulent`).
